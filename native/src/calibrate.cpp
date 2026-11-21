@@ -186,12 +186,19 @@ public:
         }
 
         // 4) ifields_ + ArtField layout
-        size_t nd = kDeclared.size();
+        // Older ART keeps instance and static fields in separate arrays (ifields_ / sfields_);
+        // newer ART merges them into one fields_ array, so the array holding the declared
+        // instance fields may also carry the static ones.
+        const std::unordered_set<std::string> wantStatic = {"sMarker", "sKeep"};
+        const size_t kInstCount = kDeclared.size();
+        const size_t kMergedCount = kInstCount + wantStatic.size();
+        size_t nd = 0;
         int ifieldsOff = -1, afStride = -1, afDecl = -1;
         for (int off = 24; off <= 104 && ifieldsOff < 0; off += 8) {
             uint64_t arr = untag(mem_.u64(sentClass + static_cast<uint64_t>(off)));
             if (arr < 0x1000 || !mem_.isMapped(arr)) continue;
-            if (mem_.u32(arr) != nd) continue;
+            nd = mem_.u32(arr);
+            if (nd != kInstCount && nd != kMergedCount) continue;
             for (int stride : {12, 16, 20, 24}) {
                 for (int decl : {0, 4, 8, 12}) {
                     if (decl + 4 > stride) continue;
@@ -217,6 +224,7 @@ public:
             if (err) *err = "failed to infer Class.ifields_ / ArtField stride";
             return false;
         }
+        const bool mergedFields = (nd == kMergedCount);
         res.cls_ifields = static_cast<uint64_t>(ifieldsOff);
         res.af_stride = static_cast<uint64_t>(afStride);
         res.af_decl = static_cast<uint64_t>(afDecl);
@@ -228,6 +236,7 @@ public:
         }
 
         std::unordered_set<std::string> wantNames(kDeclared.begin(), kDeclared.end());
+        if (mergedFields) wantNames.insert(wantStatic.begin(), wantStatic.end());
         int afDex = -1;
         for (int slot : {0, 4, 8, 12}) {
             if (slot == afDecl || slot + 4 > afStride) continue;
@@ -291,9 +300,38 @@ public:
         }
         res.af_off = static_cast<uint64_t>(afOff);
 
-        // 4b) Bonus: infer Class.sfields_ (static fields: sMarker, sKeep)
-        const std::unordered_set<std::string> wantStatic = {"sMarker", "sKeep"};
-        for (int off = 24; off <= 104; off += 8) {
+        // 4a) ArtField.access_flags_: the slot whose ACC_STATIC bit separates static from
+        // instance fields. Only observable on the merged array; it is what lets readers split
+        // that array back into instance and static fields, so it must resolve there.
+        constexpr uint32_t kAccStatic = 0x0008;
+        if (mergedFields) {
+            int afAccess = -1;
+            for (int slot : {0, 4, 8, 12}) {
+                if (slot == afDecl || slot == afDex || slot == afOff || slot + 4 > afStride) continue;
+                bool okAll = true;
+                for (uint64_t rc : recs) {
+                    auto fn = dexSent->field(mem_.u32(rc + res.af_dex));
+                    bool isStatic = (mem_.u32(rc + static_cast<uint64_t>(slot)) & kAccStatic) != 0;
+                    if (isStatic != (wantStatic.count(fn.name) != 0)) {
+                        okAll = false;
+                        break;
+                    }
+                }
+                if (okAll) {
+                    afAccess = slot;
+                    break;
+                }
+            }
+            if (afAccess < 0) {
+                if (err) *err = "failed to infer ArtField.access_flags_ on merged Class.fields_";
+                return false;
+            }
+            res.af_access = static_cast<uint64_t>(afAccess);
+            res.cls_sfields = res.cls_ifields;
+        }
+
+        // 4b) Bonus: infer Class.sfields_ (static fields: sMarker, sKeep) when it is a separate array
+        for (int off = 24; !mergedFields && off <= 104; off += 8) {
             if (off == ifieldsOff) continue;
             uint64_t sarr = untag(mem_.u64(sentClass + static_cast<uint64_t>(off)));
             if (sarr < 0x1000 || !mem_.isMapped(sarr)) continue;
@@ -431,6 +469,23 @@ public:
         }
         if (classDefOff >= 0) {
             res.cls_dex_class_def = static_cast<uint64_t>(classDefOff);
+        }
+
+        // 10) Offsets with no sentinel marker follow their calibrated neighbours. The 32-bit
+        // tail of mirror::Class keeps its field order across ART versions
+        // (access_flags_, class_flags_, class_size_, ..., dex_type_idx_, num_reference_instance_fields_,
+        //  ..., object_size_, object_size_alloc_fast_path_, primitive_type_, <ref offsets>, status_)
+        // but slides as a block when pointer members before it are added or removed
+        // (e.g. sfields_ merged into fields_), so fixed defaults go stale.
+        if (accessOff >= 0) {
+            res.cls_class_flags = static_cast<uint64_t>(accessOff) + 4;
+            res.cls_class_size = static_cast<uint64_t>(accessOff) + 8;
+        }
+        res.cls_num_ref_inst = static_cast<uint64_t>(typeIdxOff) + 4;
+        if (objSizeOff >= 0) {
+            res.cls_obj_size_fast = static_cast<uint64_t>(objSizeOff) + 4;
+            res.cls_prim_type = static_cast<uint64_t>(objSizeOff) + 8;
+            res.cls_status = static_cast<uint64_t>(objSizeOff) + 16;
         }
 
         res.fingerprint = readBuildFingerprint();

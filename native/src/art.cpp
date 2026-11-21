@@ -6,6 +6,10 @@
 
 namespace artseek {
 
+namespace {
+constexpr uint32_t kAccStatic = 0x0008;
+} // namespace
+
 std::string descToDot(const std::string& desc) {
     if (desc.size() >= 2 && desc.front() == 'L' && desc.back() == ';') {
         std::string out = desc.substr(1, desc.size() - 2);
@@ -575,7 +579,9 @@ std::vector<ArtFieldInfo> ArtRuntime::readRawInstanceFields(uint64_t classAddr) 
                     uint64_t p = arr + 4 + static_cast<uint64_t>(i) * L_.af_stride;
                     ArtFieldInfo fi;
                     fi.declClass = mem_.u32(p + L_.af_decl);
-                    fi.access = mem_.u32(p + 4);
+                    fi.access = mem_.u32(p + L_.af_access);
+                    // A merged fields_ array also lists static fields; they are not part of the instance layout.
+                    if ((fi.access & kAccStatic) != 0) continue;
                     fi.dexIdx = mem_.u32(p + L_.af_dex);
                     fi.offset = mem_.u32(p + L_.af_off);
                     if (fi.declClass >= 0x1000) {
@@ -643,7 +649,9 @@ const FieldLayout& ArtRuntime::staticFieldLayout(uint64_t classAddr) {
             uint64_t p = arr + 4 + static_cast<uint64_t>(i) * L_.af_stride;
             ArtFieldInfo fi;
             fi.declClass = mem_.u32(p + L_.af_decl);
-            fi.access = mem_.u32(p + 4);
+            fi.access = mem_.u32(p + L_.af_access);
+            // A merged fields_ array also lists instance fields; skip them here.
+            if ((fi.access & kAccStatic) == 0) continue;
             fi.dexIdx = mem_.u32(p + L_.af_dex);
             fi.offset = mem_.u32(p + L_.af_off);
             if (fi.declClass >= 0x1000) {
@@ -665,7 +673,8 @@ const FieldLayout& ArtRuntime::staticFieldLayout(uint64_t classAddr) {
         return !fl.fields.empty();
     };
 
-    if (!tryReadSFieldsAt(L_.cls_sfields)) {
+    // With a merged fields_ array (cls_sfields == cls_ifields) there is no other slot to probe.
+    if (!tryReadSFieldsAt(L_.cls_sfields) && L_.cls_sfields != L_.cls_ifields) {
         // Fallback probe around ifields_
         for (uint64_t off = 32; off <= 80; off += 8) {
             if (off == L_.cls_ifields || off == L_.cls_sfields) continue;

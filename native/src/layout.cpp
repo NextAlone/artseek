@@ -42,6 +42,7 @@ Json ArtLayout::toJson() const {
     j.set("af_decl", af_decl);
     j.set("af_dex", af_dex);
     j.set("af_off", af_off);
+    j.set("af_access", af_access);
     j.set("inst_size", static_cast<uint64_t>(inst_size));
     j.set("fingerprint", fingerprint);
     j.set("source", source);
@@ -76,6 +77,7 @@ Json ArtLayout::toNumericMap() const {
     j.set("af_decl", af_decl);
     j.set("af_dex", af_dex);
     j.set("af_off", af_off);
+    j.set("af_access", af_access);
     j.set("inst_size", static_cast<uint64_t>(inst_size));
     return j;
 }
@@ -123,6 +125,7 @@ bool ArtLayout::fromJson(const Json& j, ArtLayout& out) {
     if (!reqU64("af_decl", tmp.af_decl)) return false;
     if (!reqU64("af_dex", tmp.af_dex)) return false;
     if (!reqU64("af_off", tmp.af_off)) return false;
+    optU64("af_access", tmp.af_access);
 
     uint64_t isz = 0;
     optU64("inst_size", isz);

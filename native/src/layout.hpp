@@ -37,6 +37,7 @@ struct ArtLayout {
     uint64_t af_decl = 0;
     uint64_t af_dex = 8;
     uint64_t af_off = 12;
+    uint64_t af_access = 4;
 
     uint32_t inst_size = 0;
     std::string fingerprint;
